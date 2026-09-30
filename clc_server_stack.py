@@ -177,9 +177,3 @@ class ClcServerStack(Stack):
 
         CfnOutput(self, "InstanceId", value=self.instance.instance_id)
         CfnOutput(self, "PrivateIp", value=self.instance.instance_private_ip)
-
-        sqs.Queue(
-            self,
-            "DemoQueue",
-            removal_policy=RemovalPolicy.DESTROY,
-        )
