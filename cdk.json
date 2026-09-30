@@ -1,3 +1,13 @@
 {
-  "app": "python3 app.py"
+  "app": "python3 app.py",
+  "context": {
+    "env_name": "dev",
+    "subnet_id": "subnet-0d5d6260573383be6",
+    "subnet_az": "us-west-2a",
+    "route_table_id": "rtb-04b860328b4218a87",
+    "ami_id": "ami-030d5b6e47409757a",
+    "instance_type": "m6i.2xlarge",
+    "data_volume_gib": 500,
+    "allowed_cidrs": ["10.0.0.0/16"]
+  }
 }
