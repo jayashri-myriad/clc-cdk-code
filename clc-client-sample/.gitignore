@@ -1,0 +1,5 @@
+/installer.sh
+/CLCServerCommandLineTools_*.sh
+/input.local.json
+/.clc-install/
+/.env

@@ -1,0 +1,5 @@
+{
+  "read1": "s3://example-clc-input/test/sample_R1.fastq.gz",
+  "read2": "s3://example-clc-input/test/sample_R2.fastq.gz",
+  "destination": "s3://example-clc-output/test/run-001/"
+}
