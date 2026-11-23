@@ -90,6 +90,25 @@ def get_client(installer: Path, install_dir: Path, env: dict[str, str]) -> Path:
     return client
 
 
+def connection_args(settings: dict[str, str]) -> list[str]:
+    """Build the server connection arguments shared by workflow and status commands."""
+    return [
+        "-S", settings["CLC_HOST"], "-U", settings["CLC_USER"],
+        "-W", settings["CLC_PASSWORD"], "-P", settings["CLC_PORT"],
+    ]
+
+
+def workflow_args(settings: dict[str, str], job: tuple[str, str, str]) -> list[str]:
+    """Build the cloud workflow arguments for the paired reads and destination."""
+    read1, read2, destination = job
+    return [
+        "-L", settings["CLC_PRESET"], "-A", settings["CLC_WORKFLOW"],
+        "--reads-import-command", "ngs_import_illumina",
+        "--reads-select-files", read1, "--reads-select-files", read2,
+        "--reads-paired-reads", "true", "--destination-cloud", destination,
+    ]
+
+
 def main() -> int:
     """Load configuration and job input, then run the paired-read CLC workflow.
 
@@ -119,12 +138,8 @@ def main() -> int:
         env.pop("CLC_PASSWORD", None)
         client = get_client(installer, install_dir, env)
         command = [
-            str(client), "-S", settings["CLC_HOST"], "-U", settings["CLC_USER"],
-            "-W", settings["CLC_PASSWORD"], "-P", settings["CLC_PORT"],
-            "-L", settings["CLC_PRESET"], "-A", settings["CLC_WORKFLOW"],
-            "--reads-import-command", "ngs_import_illumina",
-            "--reads-select-files", read1, "--reads-select-files", read2,
-            "--reads-paired-reads", "true", "--destination-cloud", destination,
+            str(client), *connection_args(settings),
+            *workflow_args(settings, (read1, read2, destination)),
         ]
         # Wait for completion without logging potentially sensitive CLI output.
         status = subprocess.run(
