@@ -68,6 +68,11 @@ The legacy [run.sh](./run.sh) is not used by this runner and does not load
 
 ## Asynchronous submission and polling
 
+For the proposed Lambda and Step Functions design, see the
+[asynchronous analysis orchestration plan](./step-functions-plan.md).
+It separates submission and single-request status checks from state-machine waiting
+and keeps result retrieval outside the polling loop.
+
 [run_async.py](./run_async.py) uses the same `.env`, input format, client
 installation, and workflow arguments as the synchronous runner.
 

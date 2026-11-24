@@ -1,0 +1,14 @@
+{
+  "app": "python app.py",
+  "context": {
+    "region": "us-west-2",
+    "vpc_id": "vpc-044c9d6ddbc0b3fc0",
+    "subnet_ids": ["subnet-0d5d6260573383be6"],
+    "subnet_azs": ["us-west-2a"],
+    "route_table_ids": ["rtb-04b860328b4218a87"],
+    "clc_port": 7777,
+    "clc_workflow": "wf-myriad_genetics-qiaseq-dna-ultra-somatic--illumina----custom-bed-and-primers",
+    "clc_preset": "cgc-medium",
+    "max_active_analyses": 10
+  }
+}

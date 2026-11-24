@@ -1,0 +1,7 @@
+{
+  "request_id": "run-001-sample-A",
+  "sample_id": "synthetic-sample-A",
+  "read1": "s3://example-input/reads/sample-A_R1.fastq.gz",
+  "read2": "s3://example-input/reads/sample-A_R2.fastq.gz",
+  "destination": "s3://example-output/results/run-001/sample-A/"
+}

@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!requirements.txt
+!*.py
+!vendor/
+!vendor/CLCServerCommandLineTools_26_0_7_64.sh
