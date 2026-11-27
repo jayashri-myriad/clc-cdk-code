@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from aws_cdk import (
-    ArnFormat, Aws, CfnOutput, CfnParameter, Duration, RemovalPolicy, Stack,
+    Aws, CfnOutput, CfnParameter, Duration, RemovalPolicy, Stack,
     aws_dynamodb as dynamodb,
     aws_ec2 as ec2,
     aws_ecr_assets as ecr_assets,
@@ -17,7 +17,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from workflow import analysis_definition, monitor_definition
+from workflow import analysis_definition
 
 
 class AnalysisStack(Stack):
@@ -151,51 +151,16 @@ class AnalysisStack(Stack):
             functions.append(function)
         submit_function, status_function = functions
 
-        # The polling workflow can invoke only the Status Lambda, not the Submit Lambda.
-        # It waits between checks and returns after at most 100 running checks so a
-        # long analysis does not exceed Step Functions' execution-history event limit.
-        monitor_role = iam.Role(self, "MonitorRole", assumed_by=iam.ServicePrincipal("states.amazonaws.com"))
-        status_function.grant_invoke(monitor_role)
-        monitor_machine = self.machine(
-            "PollingSegment", monitor_role, monitor_definition(status_function.function_arn),
-        )
         # This role is used by the per-sample workflow, not by Lambda or the CLC server.
-        # It permits submission and recording monitoring failures through the handlers.
+        # It permits the one state machine to submit jobs and check their status.
         analysis_role = iam.Role(self, "AnalysisRole", assumed_by=iam.ServicePrincipal("states.amazonaws.com"))
         submit_function.grant_invoke(analysis_role)
         status_function.grant_invoke(analysis_role)
-        # Allow the per-sample workflow to start this specific polling state machine.
-        # It waits for the segment's result before deciding whether another is needed.
-        analysis_role.add_to_policy(iam.PolicyStatement(
-            actions=["states:StartExecution"], resources=[monitor_machine.attr_arn],
-        ))
-        # The synchronous child-workflow integration needs to inspect/stop child executions.
-        # The ARN pattern limits this permission to executions of the polling machine.
-        # Stopping a child execution stops monitoring only; it does not cancel a CLC job.
-        analysis_role.add_to_policy(iam.PolicyStatement(
-            actions=["states:DescribeExecution", "states:StopExecution"],
-            resources=[self.format_arn(
-                service="states", resource="execution",
-                resource_name=f"{monitor_machine.attr_name}:*",
-                arn_format=ArnFormat.COLON_RESOURCE_NAME,
-            )],
-        ))
-        # AWS uses this named EventBridge rule to notify the waiting per-sample workflow
-        # when a child execution finishes. This is separate from the alert rule below.
-        analysis_role.add_to_policy(iam.PolicyStatement(
-            actions=["events:PutTargets", "events:PutRule", "events:DescribeRule"],
-            resources=[self.format_arn(
-                service="events", resource="rule",
-                resource_name="StepFunctionsGetEventsForStepFunctionsExecutionRule",
-            )],
-        ))
-        # This is the entry point callers start once per sample.
-        # Its states submit once, run polling segments, and finish with success/failure.
+        # This is the only Step Functions state machine: it submits a sample and
+        # loops through five-minute Wait/status-check steps until there is an outcome.
         analysis_machine = self.machine(
             "Analysis", analysis_role,
-            analysis_definition(
-                submit_function.function_arn, status_function.function_arn, monitor_machine.attr_arn,
-            ),
+            analysis_definition(submit_function.function_arn, status_function.function_arn),
         )
         # Encrypt SNS alert messages with a dedicated key. Allow EventBridge in this
         # account to use the key so it can publish to the encrypted topic.
@@ -208,14 +173,14 @@ class AnalysisStack(Stack):
         # SNS is the destination for failure notifications. Creating a topic does not
         # email anyone: an operator must add and confirm an appropriate subscription.
         topic = sns.Topic(self, "Alerts", master_key=alert_key, enforce_ssl=True)
-        # Watch both state machines for failure, timeout, or manual stop events.
+        # Watch the single analysis state machine for failure, timeout, or manual stop.
         # Successful executions do not match this rule.
         rule = events.Rule(
             self, "ExecutionFailures",
             event_pattern=events.EventPattern(
                 source=["aws.states"], detail_type=["Step Functions Execution Status Change"],
                 detail={
-                    "stateMachineArn": [analysis_machine.attr_arn, monitor_machine.attr_arn],
+                    "stateMachineArn": [analysis_machine.attr_arn],
                     "status": ["FAILED", "TIMED_OUT", "ABORTED"],
                 },
             ),
@@ -238,8 +203,7 @@ class AnalysisStack(Stack):
         Attach its execution role and retained error logs, preserving explicit
         JSON nulls needed by error handlers. Return the resource for ARN references.
         """
-        # Apply the same logging and role setup to both Standard state machines.
-        # Standard workflows support the long waits needed for CLC analyses.
+        # Configure a Standard workflow so it can wait between long-running CLC checks.
         log_group = logs.LogGroup(
             self, f"{name}HistoryLogs", retention=logs.RetentionDays.ONE_MONTH,
             removal_policy=RemovalPolicy.RETAIN,

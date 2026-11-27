@@ -25,7 +25,7 @@ class InfrastructureTests(unittest.TestCase):
             template = Template.from_stack(stack)
             template.resource_count_is("AWS::EC2::Instance", 0)
             template.resource_count_is("AWS::Lambda::Function", 2)
-            template.resource_count_is("AWS::StepFunctions::StateMachine", 2)
+            template.resource_count_is("AWS::StepFunctions::StateMachine", 1)
             template.has_resource_properties("AWS::EC2::SecurityGroupIngress", {
                 "FromPort": 7777, "ToPort": 7777, "IpProtocol": "tcp",
                 "SourceSecurityGroupId": Match.any_value(),
@@ -46,6 +46,7 @@ class InfrastructureTests(unittest.TestCase):
             })
             template.has_parameter("ClcPassword", {"NoEcho": True})
             machines = template.find_resources("AWS::StepFunctions::StateMachine")
+            self.assertEqual(len(machines), 1)
             for machine in machines.values():
                 self.assertFalse(machine["Properties"]["LoggingConfiguration"]["IncludeExecutionData"])
                 self.assertTrue(machine.get("DependsOn"))
@@ -53,6 +54,10 @@ class InfrastructureTests(unittest.TestCase):
                 parts = definition["Fn::Join"][1]
                 asl = json.loads("".join(part if isinstance(part, str) else "resolved-arn" for part in parts))
                 for state in asl["States"].values():
+                    if state.get("Type") == "Wait" and state.get("Next") == "CheckAnalysisStatus":
+                        self.assertEqual(state["SecondsPath"], "$.analysis.wait_seconds")
+                    if state.get("Type") == "Task":
+                        self.assertEqual(state["Resource"], "arn:aws:states:::lambda:invoke")
                     for catch in state.get("Catch", []):
                         self.assertIn("ResultPath", catch)
                         self.assertIsNone(catch["ResultPath"])

@@ -31,93 +31,16 @@ def failure_recorder(status_arn: str) -> dict:
     }
 
 
-def monitor_definition(status_arn: str) -> dict:
-    """Build the child workflow: wait, check one job, then choose the next action.
+def analysis_definition(submit_arn: str, status_arn: str) -> dict:
+    """Build the single per-sample workflow for submission and ongoing monitoring.
 
-    Return on completion/timeout or after 100 running checks. Breaking a long
-    polling session into segments avoids the execution-history event limit.
-    The caller must pass the same process ID and deadline into each new segment.
+    Wait for capacity if necessary, submit once, then wait five minutes between
+    status checks until the job finishes or the monitoring deadline expires.
+    Uncertain submissions require review; they never trigger an automatic resubmit.
     """
     result_fields = (
         "request_id", "sample_id", "job_id", "deadline", "status", "wait_seconds",
     )
-    return {
-        "StartAt": "InitializeCount", "TimeoutSeconds": 86400,
-        "States": {
-            "InitializeCount": {
-                "Type": "Pass", "Result": {"value": 0},
-                "ResultPath": "$.checks", "Next": "WaitForNextCheck",
-            },
-            "WaitForNextCheck": {
-                # Step Functions waits here, so no Lambda stays running between checks.
-                "Type": "Wait", "SecondsPath": "$.analysis.wait_seconds",
-                "Next": "CheckAnalysisStatus",
-            },
-            "CheckAnalysisStatus": {
-                **lambda_task(status_arn, {
-                    "request_id.$": "$.analysis.request_id",
-                    "job_id.$": "$.analysis.job_id",
-                    "deadline.$": "$.analysis.deadline",
-                }),
-                # Keep the sample, process ID, and deadline together for the next check.
-                "ResultSelector": {f"{field}.$": f"$.Payload.{field}" for field in result_fields},
-                "ResultPath": "$.analysis", "Next": "EvaluateStatus",
-                "Retry": [{
-                    "ErrorEquals": [
-                        "TransientStatusError", "Lambda.ServiceException",
-                        "Lambda.AWSLambdaException", "Lambda.SdkClientException",
-                        "Lambda.TooManyRequestsException",
-                    ],
-                    "IntervalSeconds": 5, "MaxAttempts": 3,
-                    "BackoffRate": 2, "JitterStrategy": "FULL",
-                }],
-                "Catch": [{
-                    "ErrorEquals": ["States.ALL"], "ResultPath": None,
-                    "Next": "RecordMonitoringFailure",
-                }],
-            },
-            "EvaluateStatus": {
-                "Type": "Choice",
-                "Choices": [
-                    {"Variable": "$.analysis.status", "StringEquals": "running", "Next": "IncrementCount"},
-                    *[
-                        {"Variable": "$.analysis.status", "StringEquals": status, "Next": "SegmentComplete"}
-                        for status in ("successful", "failed", "timeout")
-                    ],
-                ],
-                "Default": "RecordMonitoringFailure",
-            },
-            "IncrementCount": {
-                "Type": "Pass",
-                "Parameters": {"value.$": "States.MathAdd($.checks.value, 1)"},
-                "ResultPath": "$.checks", "Next": "CheckSegmentLimit",
-            },
-            "CheckSegmentLimit": {
-                # Return after 100 running checks; the outer workflow starts a fresh segment.
-                "Type": "Choice",
-                "Choices": [{
-                    "Variable": "$.checks.value", "NumericGreaterThanEquals": 100,
-                    "Next": "SegmentComplete",
-                }],
-                "Default": "WaitForNextCheck",
-            },
-            "SegmentComplete": {"Type": "Succeed"},
-            "RecordMonitoringFailure": failure_recorder(status_arn),
-            "MonitoringFailed": {
-                "Type": "Fail", "Error": "CLCMonitoringFailed",
-                "Cause": "Monitoring failed; the CLC job may still be running. Reconcile the ledger.",
-            },
-        },
-    }
-
-
-def analysis_definition(submit_arn: str, status_arn: str, monitor_arn: str) -> dict:
-    """Build the public per-sample workflow for submission and ongoing monitoring.
-
-    Wait for capacity if necessary, prepare the job once, then run polling
-    segments until an outcome is known. Uncertain submissions require review,
-    and monitoring failures must not trigger a new CLC submission.
-    """
     return {
         "StartAt": "InitializeRequest", "TimeoutSeconds": 97200,
         "States": {
@@ -159,23 +82,34 @@ def analysis_definition(submit_arn: str, status_arn: str, monitor_arn: str) -> d
                     {"Variable": "$.analysis.status", "StringEquals": "successful", "Next": "AnalysisSucceeded"},
                     {"Variable": "$.analysis.status", "StringEquals": "failed", "Next": "AnalysisFailed"},
                     {"Variable": "$.analysis.status", "StringEquals": "timeout", "Next": "MonitoringTimedOut"},
-                    {"Variable": "$.analysis.status", "StringEquals": "submitted", "Next": "MonitorSegment"},
-                    {"Variable": "$.analysis.status", "StringEquals": "running", "Next": "MonitorSegment"},
+                    {"Variable": "$.analysis.status", "StringEquals": "submitted", "Next": "WaitForNextCheck"},
+                    {"Variable": "$.analysis.status", "StringEquals": "running", "Next": "WaitForNextCheck"},
                 ],
                 "Default": "RecordMonitoringFailure",
             },
-            "MonitorSegment": {
-                # Wait for the child workflow, then reuse its job ID and unchanged deadline.
-                "Type": "Task", "Resource": "arn:aws:states:::states:startExecution.sync:2",
-                "Parameters": {
-                    "StateMachineArn": monitor_arn,
-                    "Input": {
-                        "analysis.$": "$.analysis",
-                        "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id",
-                    },
-                },
-                "ResultSelector": {"analysis.$": "$.Output.analysis"},
-                "ResultPath": "$", "Next": "EvaluateAnalysis",
+            "WaitForNextCheck": {
+                # Wait in Step Functions; no Lambda runs during this five-minute delay.
+                "Type": "Wait", "SecondsPath": "$.analysis.wait_seconds",
+                "Next": "CheckAnalysisStatus",
+            },
+            "CheckAnalysisStatus": {
+                **lambda_task(status_arn, {
+                    "request_id.$": "$.analysis.request_id",
+                    "job_id.$": "$.analysis.job_id",
+                    "deadline.$": "$.analysis.deadline",
+                }),
+                # Replace only the analysis status fields and retain admission context.
+                "ResultSelector": {f"{field}.$": f"$.Payload.{field}" for field in result_fields},
+                "ResultPath": "$.analysis", "Next": "EvaluateAnalysis",
+                "Retry": [{
+                    "ErrorEquals": [
+                        "TransientStatusError", "Lambda.ServiceException",
+                        "Lambda.AWSLambdaException", "Lambda.SdkClientException",
+                        "Lambda.TooManyRequestsException",
+                    ],
+                    "IntervalSeconds": 5, "MaxAttempts": 3,
+                    "BackoffRate": 2, "JitterStrategy": "FULL",
+                }],
                 "Catch": [{
                     "ErrorEquals": ["States.ALL"], "ResultPath": None,
                     "Next": "RecordMonitoringFailure",

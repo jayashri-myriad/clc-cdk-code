@@ -77,6 +77,7 @@ class RuntimeTests(unittest.TestCase):
         result, command = self.submit()
         self.assertEqual(result["job_id"], "process-101")
         self.assertEqual(result["status"], "submitted")
+        self.assertEqual(result["wait_seconds"], 300)
         self.assertEqual(result["deadline"], "2026-11-25T16:00:00Z")
         arguments = command.call_args.args[0]
         self.assertIn("-Y", arguments)
@@ -200,6 +201,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(response["wait_seconds"], 0)
         self.assertEqual(self.active(), 1)
         command.assert_not_called()
+
+    def test_running_status_waits_five_minutes_unless_deadline_is_nearer(self):
+        result, _ = self.submit()
+        with patch.object(cli.subprocess, "run", return_value=self.response(
+            "Job ID: process-101\nJob is done: No\nJob has errors: No",
+        )):
+            response = handlers.status_handler(self.status_event(result), self.context)
+        self.assertEqual(response["status"], "running")
+        self.assertEqual(response["wait_seconds"], 300)
+
+        result["deadline"] = handlers.timestamp(self.clock + timedelta(seconds=42))
+        with patch.object(cli.subprocess, "run", return_value=self.response(
+            "Job ID: process-101\nJob is done: No\nJob has errors: No",
+        )):
+            response = handlers.status_handler(self.status_event(result), self.context)
+        self.assertEqual(response["status"], "running")
+        self.assertEqual(response["wait_seconds"], 42)
 
     def test_query_timeout_is_bounded_by_remaining_budget(self):
         result, _ = self.submit()

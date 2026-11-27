@@ -7,8 +7,7 @@ existing server application or client sample.
 
 - Two Linux/x86-64 container Lambdas using one image: submission and status checking.
 - A retained, encrypted DynamoDB ledger with point-in-time recovery.
-- A per-sample Step Functions Standard workflow and a private polling-segment
-  Standard workflow.
+- One per-sample Step Functions Standard workflow that submits and polls each job.
 - A Lambda security group and an ingress rule on the existing server security
   group for TCP **7777**.
 - A DynamoDB gateway endpoint unless an existing endpoint is explicitly selected.
@@ -33,17 +32,11 @@ Submit CLC workflow once with -Y
     |
 Persist CLC process ID and absolute monitoring deadline
     |
-Start polling segment synchronously
-    |
-    +-- Wait -> Lambda: one -I request -> Choice
-    |                                    |
-    |                                    +-- running: repeat
-    |                                    +-- terminal/timeout: return
-    |
-After 100 running checks, start a new segment with the same ID/deadline
-    |
-Successful -> Succeed
-Analysis failed / monitoring error / timeout -> Fail
+Wait five minutes -> Status Lambda: one -I request -> Choice
+    ^                                              |
+    +---------------- running ---------------------+
+                                                   +-- successful -> Succeed
+                                                   +-- failed/timeout/error -> Fail
 ```
 
 Step Functions persists each sample's ID in `analysis.job_id`; no Lambda needs
@@ -55,7 +48,7 @@ Defaults:
 | --- | --- |
 | Region | `us-west-2` |
 | CLC server port | `7777`, the server-side port of the local SSM tunnel |
-| Poll interval | 30 seconds after each completed running check |
+| Poll interval | 5 minutes after each completed running check |
 | Monitoring budget | 24 hours after accepted submission |
 | CLI request timeout | At most 60 seconds, clamped to remaining monitoring time |
 | Lambda timeout / memory | 120 seconds / 2048 MiB |
@@ -68,11 +61,10 @@ deadline before contacting CLC, including after retries. Only read-only status
 timeouts and selected transient Lambda service errors have bounded automatic
 retries (three retries, exponential backoff from five seconds, full jitter).
 
-**Why two state machines?** A 24-hour loop at 30-second intervals can exceed
-Standard Step Functions' 25,000-event history limit. Each polling segment makes
-at most 100 successful running checks, then returns control to the per-sample
-workflow. The deadline is not reset between segments. Do not start the internal
-polling-segment machine directly.
+The deployment creates exactly one Step Functions state machine. A 24-hour
+monitoring window at five-minute intervals uses about 288 status checks, below
+the Standard workflow's 25,000-event history limit. The polling loop runs in
+this same per-sample execution; no child or polling-segment machine is deployed.
 
 Stopping/timing out orchestration never cancels the CLC job.
 

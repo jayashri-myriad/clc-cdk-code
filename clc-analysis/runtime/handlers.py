@@ -17,6 +17,8 @@ from cli import (
 )
 from ledger import Ledger, ReconciliationRequired, RequestConflict
 
+POLL_INTERVAL_SECONDS = 300
+
 
 class LambdaContext(Protocol):
     invoked_function_arn: str
@@ -157,12 +159,15 @@ def analysis_response(request_id: str, record: dict, deadline: str) -> dict:
     Include the sample ID, CLC process ID, saved status, deadline, and next wait.
     This only builds a response; it does not query CLC or change the saved record.
     """
-    # Shorten the next wait when less than 30 seconds remain.
+    # Shorten the next wait when less than five minutes remain in the deadline.
     return {
         "request_id": request_id, "sample_id": record["sample_id"]["S"],
         "job_id": record["job_id"]["S"], "deadline": deadline,
         "status": record["analysis_status"]["S"],
-        "wait_seconds": min(30, max(0, math.ceil((deadline_value(deadline) - now()).total_seconds()))),
+        "wait_seconds": min(
+            POLL_INTERVAL_SECONDS,
+            max(0, math.ceil((deadline_value(deadline) - now()).total_seconds())),
+        ),
     }
 
 
@@ -219,7 +224,7 @@ def prepare(event: dict, context: LambdaContext) -> dict:
     return {
         "request_id": request_id, "sample_id": sample_id, "job_id": job_id,
         "deadline": deadline, "status": "submitted",
-        "wait_seconds": 30,
+        "wait_seconds": POLL_INTERVAL_SECONDS,
     }
 
 
@@ -293,10 +298,11 @@ def monitor(event: dict) -> dict:
         status = "timeout"
     else:
         ledger.monitoring(request_id, "active")
-    return {
-        **analysis_response(request_id, record, deadline),
-        "status": status,
-    }
+    response = analysis_response(request_id, record, deadline)
+    response["status"] = status
+    if status == "timeout":
+        response["wait_seconds"] = 0
+    return response
 
 
 def status_handler(event: dict, context: LambdaContext) -> dict:
